@@ -29,7 +29,9 @@ jobs:
       - name: Find the newest upstream release
         id: latest
         run: |
-          upstream_json=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+          # public repo: no auth needed, and the job token is scoped to this
+          # fork anyway
+          upstream_json=$(curl -fsSL \
             "https://api.github.com/repos/$UPSTREAM/releases/latest")
           tag=$(printf '%s' "$upstream_json" | jq -r .tag_name)
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -40,7 +42,7 @@ jobs:
             exit 0
           fi
 
-          fork_json=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+          fork_json=$(curl -s -H "Authorization: Bearer ${{ github.token }}" \
             "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$tag")
           if printf '%s' "$fork_json" | jq -e '[.assets[]?.name] | map(select(test("netbsd"))) | length > 0'; then
             echo "$tag already built for NetBSD on this fork, nothing to do"
