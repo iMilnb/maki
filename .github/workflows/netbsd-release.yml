@@ -72,6 +72,8 @@ jobs:
             git merge --no-ff -m "merge upstream $TAG" "$TAG"
           fi
 
-          git push origin "$NETBSD_BRANCH"
+          # HEAD:, not the branch name: checkout of a non-default ref can leave
+          # a detached HEAD, which would push the stale branch tip instead
+          git push origin "HEAD:refs/heads/$NETBSD_BRANCH"
           # triggers release.yml, which builds only the NetBSD targets
           git push -f origin "$TAG:refs/tags/$TAG"
