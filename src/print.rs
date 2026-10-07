@@ -316,6 +316,7 @@ pub fn run(params: PrintParams) -> Result<()> {
             | AgentEvent::ToolHeaderSnapshot { .. }
             | AgentEvent::LiveToolBuf { .. }
             | AgentEvent::Nudge
+            | AgentEvent::Notice { .. }
             | AgentEvent::PromptProgress { .. }
             | AgentEvent::StreamClosed => {}
             AgentEvent::Steered { .. } => {
@@ -386,7 +387,7 @@ pub fn run(params: PrintParams) -> Result<()> {
                 stop_reason = Some(*reason);
                 break;
             }
-            AgentEvent::Error { message } => {
+            AgentEvent::Error { message, .. } => {
                 is_error = true;
                 result_text = message.clone();
                 break;

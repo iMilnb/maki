@@ -65,7 +65,7 @@ url = "https://mcp.corp.example.com/mcp"
 ca_file = "~/certs/corp-ca.pem"
 ```
 
-On macOS, Maki uses its own OpenSSL, which does not read the keychain. The bundle replaces the default CAs for this server and its OAuth endpoints. If OAuth goes through a public provider, add the public CAs to the bundle too, for example `cat /etc/ssl/cert.pem corp-ca.pem > bundle.pem`. The path expands `${VAR}` and `~`, and a relative path starts from the folder of the `mcp.toml` that sets it. On macOS and Linux, you can instead trust a CA for every HTTPS request Maki makes by pointing `SSL_CERT_FILE` at a bundle that holds the public CAs as well.
+Maki checks certificates against the operating system's trust store, so a CA that is already trusted in the macOS keychain or the Windows certificate store works without `ca_file`. Set `ca_file` for a CA that is not in that store. The bundle replaces the default CAs for this server and its OAuth endpoints. If OAuth goes through a public provider, add the public CAs to the bundle too, for example `cat /etc/ssl/cert.pem corp-ca.pem > bundle.pem`. The path expands `${VAR}` and `~`, and a relative path starts from the folder of the `mcp.toml` that sets it. On macOS and Linux, you can instead trust a CA for every HTTPS request Maki makes by pointing `SSL_CERT_FILE` at a bundle that holds the public CAs as well.
 
 ### All options
 
@@ -87,7 +87,7 @@ One option lives at the top level of `mcp.toml`, outside any server:
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `defer_tools` | usize | 10 | Defer tools only when more than this many exist |
+| `defer_tools` | usize | 10 | Defer tools only when more than this many exist. Ignored with [native tool search](#loads-and-the-prompt-cache), which always defers |
 
 ## Tool search
 
@@ -98,7 +98,7 @@ So Maki, like Claude Code, defers MCP tools by default. The model sees one small
 ```
 server ships 117 tool definitions
         │
-  more than defer_tools (10)?
+  native tool search, or more than defer_tools (10)?
    │ no          │ yes
    ▼             ▼
    all load      context gets one small tool: tool_search
@@ -122,7 +122,7 @@ Ask about an incident, and the model searches for something like `datadog logs`,
 
 Tool definitions sit at the front of the prompt, inside the cached prefix. Adding one there changes the prefix, so the next request rewrites the whole conversation at cache-write rates. On a long session that single rewrite can cost more than the search saved.
 
-On the Anthropic API (direct and Bedrock) a load never touches the tools array. Maki sends every deferred definition on every request, marked as deferred so it stays out of the context, and a search result points at its matches, which the API expands in place. Calling a deferred tool straight from the catalog loads it the same way. The array is the same bytes all session long, and a load costs only the few hundred tokens of the search result.
+With native tool search a load never touches the tools array. That is the Anthropic API (direct and Bedrock) on Claude Haiku 4.5, Sonnet 4.5, Opus 4.5 and newer. Older Claude models have no tool search and work like other providers, and so does a model Maki does not know yet. Maki sends every deferred definition on every request, marked as deferred so it stays out of the context, and a search result points at its matches, which the API expands in place. Calling a deferred tool straight from the catalog loads it the same way. The array is the same bytes all session long, and a load costs only the few hundred tokens of the search result.
 
 ```
 request N     tools: [read, edit, ..., 117 deferred, tool_search]   cache hit
@@ -131,9 +131,11 @@ result        3 matches, expanded by the API
 request N+1   tools: same bytes                                      cache hit
 ```
 
-Other providers have no such mechanism, so a load adds the definition to the tools array and the cache is rebuilt once. A gateway speaking the Anthropic protocol may or may not pass the expansion through, so a custom provider gets the rebuild until its `providers.toml` row sets `supports_deferred_tools = true` (see [Provider fields](../providers/#provider-fields)).
+So with native tool search Maki always defers, whatever the count, and a server that connects mid-session costs no rebuild. That includes an `always_load` server that connects late: its tools join deferred, and the model finds them through `tool_search`. A server that disconnects keeps its entries, and a call to one of its tools tells the model the server is not connected.
 
-With 10 or fewer tools across all your servers there is no search step: at that size, searching costs more than it saves, so everything loads upfront. The top-level `defer_tools` key moves that line:
+Other providers have no such mechanism, so a load adds the definition to the tools array and the cache is rebuilt once. A gateway speaking the Anthropic protocol may or may not pass the expansion through. So a custom provider, or the built-in `anthropic` pointed at another `base_url`, gets the rebuild until its `providers.toml` row sets `supports_deferred_tools = true` (see [Provider fields](../providers/#provider-fields)).
+
+Without native tool search, with 10 or fewer tools across all your servers there is no search step: at that size, searching costs more than it saves, so everything loads upfront. If servers that connect later push the count past that line, `tool_search` joins then, with their tools behind it. The top-level `defer_tools` key moves that line:
 
 ```toml
 defer_tools = 30

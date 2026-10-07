@@ -6,7 +6,6 @@ use std::pin::pin;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use async_lock::Mutex as AsyncMutex;
 use futures::future::{Either, select};
 use maki_agent::agent::{LoadedInstructions, tool_dispatch};
 use maki_agent::cancel::{CancelMap, CancelSlot};
@@ -20,7 +19,8 @@ use maki_agent::tools::{
 use maki_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, DoneReason,
     EMPTY_RESPONSE_MARKER, EventSender, EventStreamGuard, History, InputSource, McpSession,
-    RunLedger, SessionEvents, SubagentInbox, SubagentInfo, ToolDoneEvent, event_stream,
+    RunContext, RunContextBuilder, RunLedger, SessionEvents, SubagentInbox, SubagentInfo,
+    ToolDoneEvent, event_stream,
 };
 use maki_lua_macro::{lua_class, lua_fn, lua_table};
 use maki_providers::model::ModelTier;
@@ -32,6 +32,7 @@ use maki_storage::id::MakiId;
 use maki_storage::sessions::StoredThinking;
 use mlua::{Function, IntoLuaMulti, Lua, Result as LuaResult, Table, Value as LuaValue};
 use serde_json::Value as JsonValue;
+use smol::lock::Mutex as AsyncMutex;
 use tracing::info;
 
 use crate::api::tool::{audiences_to_lua, parse_audience};
@@ -603,6 +604,9 @@ async fn session(
     // the caller left out is also a name this session cannot dispatch or bind
     // inside its sandbox.
     let tools = RequestTools::assembled(tools_json, &agent_ctx.config, &model);
+    let system = system.unwrap_or_default();
+    let context: RunContextBuilder =
+        Arc::new(move |_, _| RunContext::fixed(system.clone(), tools.clone()));
 
     let state = SessionState {
         params: AgentParams {
@@ -627,8 +631,7 @@ async fn session(
             audience,
             model_policy: Arc::clone(&agent_ctx.model_policy),
         },
-        system: system.unwrap_or_default(),
-        tools,
+        context,
         opts,
         mcp: agent_ctx
             .mcp
@@ -643,6 +646,7 @@ async fn session(
         child_cancel,
         answer_rx: Arc::new(AsyncMutex::new(answer_rx)),
         answer_tx: Some(answer_tx),
+        reauth: agent_ctx.reauth,
         inbox: Arc::new(SubagentInbox::default()),
         parent_cancels: Arc::clone(&agent_ctx.subagent_cancels),
         ui_id,
@@ -749,8 +753,8 @@ async fn dispatch_racing_live(
 
 struct SessionState {
     params: AgentParams,
-    system: String,
-    tools: RequestTools,
+    /// The caller's prompt and tools, fixed for the session's life.
+    context: RunContextBuilder,
     /// Already reconciled against `params.model`, so every reader agrees.
     opts: RequestOptions,
     /// Fresh per session so `tool_search` loads never leak between a
@@ -772,6 +776,7 @@ struct SessionState {
     child_cancel: maki_agent::cancel::CancelToken,
     answer_rx: Arc<AsyncMutex<flume::Receiver<String>>>,
     answer_tx: Option<flume::Sender<String>>,
+    reauth: bool,
     /// Shared with the host through [`SubagentInfo`], so a user watching this
     /// session can queue messages that its next turn boundary picks up.
     inbox: Arc<SubagentInbox>,
@@ -882,12 +887,12 @@ async fn prompt(
         AgentRunParams {
             history: &mut s.history,
             gauge: &mut s.gauge,
-            system: s.system.clone(),
             event_tx: s.sub_event_tx.clone(),
-            tools: s.tools.clone(),
+            context: Arc::clone(&s.context),
         },
     )
     .with_user_response_rx(Arc::clone(&s.answer_rx))
+    .with_reauth(s.reauth)
     .with_interrupt_source(Arc::clone(&s.inbox) as Arc<dyn maki_agent::InterruptSource>)
     .with_loaded_instructions(s.loaded_instructions.clone())
     .with_cancel(s.child_cancel.clone())
@@ -1115,6 +1120,7 @@ mod tests {
             turn(tokens(50, 10), 0.5),
             AgentEvent::Error {
                 message: IGNORED_ERROR.into(),
+                auth: false,
             },
             AgentEvent::Done {
                 usage: DONE_USAGE,
