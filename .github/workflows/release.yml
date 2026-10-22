@@ -169,9 +169,24 @@ jobs:
           exec zig $zm -target $ZIG_TARGET "\${args[@]}"
           EOF
           done
+          # the FreeBSD precompiled std links libkvm, libmemstat, libprocstat
+          # and libdevstat: zig only stubs the core libraries and no binary
+          # references these, so empty stubs let the link pass and lld's
+          # --as-needed drops the NEEDED entries again
+          link_extra=
+          case "$TARGET" in
+            *-freebsd)
+              mkdir -p "$w/stubs"
+              : > "$w/stub.c"
+              for lib in kvm memstat procstat devstat; do
+                zig cc -target "$ZIG_TARGET" -shared -x c -o "$w/stubs/lib$lib.so" "$w/stub.c"
+              done
+              link_extra="-L$w/stubs"
+              ;;
+          esac
           cat > "$w/linker" <<EOF
           #!/bin/bash
-          exec zig cc -target $ZIG_TARGET "\$@"
+          exec zig cc -target $ZIG_TARGET $link_extra "\$@"
           EOF
           # wrappers, not "AR=zig ar": openssl-src splits a multi-word AR
           printf '#!/bin/sh\nexec zig ar "$@"\n' > "$w/ar"
