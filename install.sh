@@ -105,8 +105,10 @@ main() {
         need_cmd unzip
     else
         case "$(uname -s)" in
-            Linux)  os="unknown-linux-musl" ;;
-            Darwin) os="apple-darwin" ;;
+            Linux)   os="unknown-linux-musl" ;;
+            Darwin)  os="apple-darwin" ;;
+            FreeBSD) os="unknown-freebsd" ;;
+            NetBSD)  os="unknown-netbsd" ;;
             *) err "unsupported OS: $(uname -s)" ;;
         esac
 
